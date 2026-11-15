@@ -135,6 +135,7 @@ pub struct Gilrs {
     next_id: usize,
     tx: Sender<Message>,
     rx: Receiver<FfMessage>,
+    ff_worker: Option<std::thread::JoinHandle<()>>,
     counter: u64,
     mappings: MappingDb,
     default_filters: bool,
@@ -143,6 +144,15 @@ pub struct Gilrs {
     axis_to_btn_released: f32,
     pub(crate) update_state: bool,
     pub(crate) gamepads_data: Vec<GamepadData>,
+}
+
+impl Drop for Gilrs {
+    fn drop(&mut self) {
+        if let Some(worker) = self.ff_worker.take() {
+            let _ = self.tx.send(Message::Shutdown);
+            let _ = worker.join();
+        }
+    }
 }
 
 impl Gilrs {
@@ -737,13 +747,14 @@ impl GilrsBuilder {
             Err(_) => unimplemented!(),
         };
 
-        let (tx, rx) = server::init(self.force_feedback);
+        let (tx, rx, ff_worker) = server::init(self.force_feedback);
 
         let mut gilrs = Gilrs {
             inner,
             next_id: 0,
             tx,
             rx,
+            ff_worker,
             counter: 0,
             mappings: self.mappings,
             default_filters: self.default_filters,

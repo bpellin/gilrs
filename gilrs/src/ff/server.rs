@@ -9,7 +9,7 @@ use super::effect_source::{DistanceModel, EffectSource, EffectState, Magnitude};
 use super::time::{Repeat, Ticks, TICK_DURATION};
 
 use std::ops::{Deref, DerefMut};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -21,6 +21,7 @@ use vec_map::VecMap;
 
 #[derive(Debug)]
 pub(crate) enum Message {
+    Shutdown,
     Create {
         id: usize,
         effect: Box<EffectSource>,
@@ -94,6 +95,7 @@ impl Message {
 struct Device {
     inner: FfDevice,
     position: [f32; 3],
+    vibrating: bool,
 }
 
 struct Effect {
@@ -139,6 +141,7 @@ impl From<FfDevice> for Device {
         Device {
             inner,
             position: [0.0, 0.0, 0.0],
+            vibrating: false,
         }
     }
 }
@@ -152,7 +155,12 @@ pub(crate) fn run(tx: Sender<FfMessage>, rx: Receiver<Message>) {
 
     loop {
         let t1 = Instant::now();
-        while let Ok(ev) = rx.try_recv() {
+        loop {
+            let ev = match rx.try_recv() {
+                Ok(event) => event,
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => Message::Shutdown,
+            };
             if ev.use_trace_level() {
                 trace!("New ff event: {:?}", ev);
             } else {
@@ -160,6 +168,12 @@ pub(crate) fn run(tx: Sender<FfMessage>, rx: Receiver<Message>) {
             }
 
             match ev {
+                Message::Shutdown => {
+                    for device in devices.values_mut().filter(|device| device.vibrating) {
+                        device.inner.set_ff_state(0, 0, Duration::ZERO);
+                    }
+                    return;
+                }
                 Message::Create { id, effect } => {
                     effects.insert(id, (*effect).into());
                 }
@@ -276,23 +290,25 @@ pub(crate) fn run(tx: Sender<FfMessage>, rx: Receiver<Message>) {
     }
 }
 
-pub(crate) fn init(enable: bool) -> (Sender<Message>, Receiver<FfMessage>) {
+pub(crate) fn init(enable: bool) -> (Sender<Message>, Receiver<FfMessage>, Option<thread::JoinHandle<()>>) {
     let (tx, _rx) = mpsc::channel();
     let (_tx2, rx2) = mpsc::channel();
 
     // Skip setup if not enabled
     if !enable {
-        return (tx, rx2);
+        return (tx, rx2, None);
     }
 
     // Wasm doesn't support threads and force feedback
     #[cfg(not(target_arch = "wasm32"))]
-    std::thread::Builder::new()
+    let worker = Some(std::thread::Builder::new()
         .name("gilrs".to_owned())
         .spawn(move || run(_tx2, _rx))
-        .expect("failed to spawn thread");
+        .expect("failed to spawn thread"));
+    #[cfg(target_arch = "wasm32")]
+    let worker = None;
 
-    (tx, rx2)
+    (tx, rx2, worker)
 }
 
 fn combine_and_play(
@@ -320,5 +336,6 @@ fn combine_and_play(
             magnitude.weak,
             Duration::from_millis(u64::from(TICK_DURATION) * 2),
         );
+        dev.vibrating = magnitude.strong != 0 || magnitude.weak != 0;
     }
 }

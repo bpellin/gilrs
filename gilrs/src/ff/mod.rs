@@ -219,7 +219,7 @@ impl Effect {
 
     /// Changes gain of the effect. `gain` will be clamped to \[0.0, f32::MAX\].
     pub fn set_gain(&self, gain: f32) -> Result<(), Error> {
-        let gain = utils::clamp(gain, 0.0, f32::MAX);
+        let gain = utils::clamp(gain, 0.0, std::primitive::f32::MAX);
         self.tx.send(Message::SetGain { id: self.id, gain })?;
 
         Ok(())
@@ -294,7 +294,7 @@ impl EffectBuilder {
 
     /// Changes gain of the effect. `gain` will be clamped to \[0.0, f32::MAX\].
     pub fn gain(&mut self, gain: f32) -> &mut Self {
-        self.gain = utils::clamp(gain, 0.0, f32::MAX);
+        self.gain = utils::clamp(gain, 0.0, std::primitive::f32::MAX);
         self
     }
 
